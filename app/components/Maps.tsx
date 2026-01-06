@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { MapPin, Navigation, Trash2, Plus, Ruler, Loader2 } from 'lucide-react';
+import { MapPin, Navigation, Trash2, Plus, Ruler, Loader2, ChevronLeft, ChevronRight, Edit2, Save, X } from 'lucide-react';
 import type L from 'leaflet';
 
 interface Titik {
@@ -14,6 +14,13 @@ interface Titik {
 interface UserLocation {
   lat: number;
   lng: number;
+}
+
+interface EditingTitik {
+  id: number;
+  name: string;
+  lat: string;
+  lng: string;
 }
 
 const Maps = () => {
@@ -29,6 +36,8 @@ const Maps = () => {
   const [distance, setDistance] = useState<string | null>(null);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [editingTitik, setEditingTitik] = useState<EditingTitik | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<{ [key: number]: L.Marker }>({});
   const linesRef = useRef<L.Polyline[]>([]);
@@ -54,6 +63,7 @@ const Maps = () => {
   // Get user location with high accuracy
   useEffect(() => {
     if (navigator.geolocation) {
+      // Try high accuracy first
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const loc = {
@@ -63,20 +73,40 @@ const Maps = () => {
           setUserLocation(loc);
           setIsLoadingLocation(false);
         },
-        (error) => {
-          console.error('Error getting location:', error);
-          // Default to Palu, Central Sulawesi if location access denied
-          setUserLocation({ lat: -0.8999, lng: 119.8707 });
-          setIsLoadingLocation(false);
+        (error: GeolocationPositionError) => {
+          console.warn('High accuracy failed, trying standard accuracy:', error.message);
+          // Fallback to standard accuracy if high accuracy fails
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const loc = {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude
+              };
+              setUserLocation(loc);
+              setIsLoadingLocation(false);
+            },
+            (fallbackError: GeolocationPositionError) => {
+              console.error('Location access denied or unavailable:', fallbackError.message);
+              // Default to Manado, North Sulawesi
+              setUserLocation({ lat: 1.4748, lng: 124.8421 });
+              setIsLoadingLocation(false);
+            },
+            {
+              enableHighAccuracy: false,
+              timeout: 10000,
+              maximumAge: 60000
+            }
+          );
         },
         {
           enableHighAccuracy: true,
-          timeout: 10000,
+          timeout: 5000,
           maximumAge: 0
         }
       );
     } else {
-      setUserLocation({ lat: -0.8999, lng: 119.8707 });
+      console.warn('Geolocation is not supported by this browser');
+      setUserLocation({ lat: 1.4748, lng: 124.8421 });
       setIsLoadingLocation(false);
     }
   }, []);
@@ -142,9 +172,10 @@ const Maps = () => {
     const marker = L.marker([titik.lat, titik.lng], {
       icon: L.divIcon({
         className: 'custom-marker',
-        html: `<div style="background: #ef4444; width: 36px; height: 36px; border-radius: 50%; border: 3px solid white; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform='scale(1)'">${markerNumber}</div>`,
+        html: `<div class="marker-dot">${markerNumber}</div>`,
         iconSize: [36, 36]
-      })
+      }),
+      draggable: true
     }).addTo(m);
 
     marker.bindPopup(`
@@ -161,8 +192,37 @@ const Maps = () => {
       toggleSelectTitik(titik.id);
     });
 
+    // Handle drag events
+    marker.on('dragend', (e: L.DragEndEvent) => {
+      const newLatLng = e.target.getLatLng();
+      updateTitikLocation(titik.id, newLatLng.lat, newLatLng.lng);
+    });
+
     markersRef.current[titik.id] = marker;
     setTitiks(prev => [...prev, titik]);
+  };
+
+  const updateTitikLocation = (id: number, lat: number, lng: number) => {
+    setTitiks(prev => prev.map(t => 
+      t.id === id ? { ...t, lat, lng } : t
+    ));
+    
+    // Update marker popup
+    const marker = markersRef.current[id];
+    if (marker) {
+      const titik = titiks.find(t => t.id === id);
+      if (titik) {
+        marker.setPopupContent(`
+          <div style="font-family: system-ui; padding: 4px;">
+            <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">${titik.name}</div>
+            <div style="color: #6b7280; font-size: 12px;">
+              <div>Lat: ${lat.toFixed(6)}</div>
+              <div>Lng: ${lng.toFixed(6)}</div>
+            </div>
+          </div>
+        `);
+      }
+    }
   };
 
   const toggleSelectTitik = (id: number) => {
@@ -248,10 +308,12 @@ const Maps = () => {
             }
           ).addTo(map);
           
-          line.bindTooltip(`${segmentDist.toFixed(2)} km`, {
-            permanent: false,
-            direction: 'center',
-            className: 'distance-tooltip'
+          line.on('mouseover', () => {
+            line.bindTooltip(`${segmentDist.toFixed(2)} km`, {
+              permanent: false,
+              direction: 'center',
+              className: 'distance-tooltip'
+            }).openTooltip();
           });
           
           linesRef.current.push(line);
@@ -374,6 +436,60 @@ const Maps = () => {
     setSelectedTitiks(prev => prev.filter(tid => tid !== id));
   };
 
+  const startEditTitik = (titik: Titik) => {
+    setEditingTitik({
+      id: titik.id,
+      name: titik.name,
+      lat: titik.lat.toString(),
+      lng: titik.lng.toString()
+    });
+  };
+
+  const cancelEditTitik = () => {
+    setEditingTitik(null);
+  };
+
+  const saveEditTitik = () => {
+    if (!editingTitik) return;
+    
+    const lat = parseFloat(editingTitik.lat);
+    const lng = parseFloat(editingTitik.lng);
+    
+    if (isNaN(lat) || isNaN(lng)) {
+      alert('Koordinat tidak valid!');
+      return;
+    }
+
+    // Update titik data
+    setTitiks(prev => prev.map(t => 
+      t.id === editingTitik.id 
+        ? { ...t, name: editingTitik.name, lat, lng } 
+        : t
+    ));
+
+    // Update marker position and popup
+    const marker = markersRef.current[editingTitik.id];
+    if (marker && L) {
+      marker.setLatLng([lat, lng]);
+      marker.setPopupContent(`
+        <div style="font-family: system-ui; padding: 4px;">
+          <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">${editingTitik.name}</div>
+          <div style="color: #6b7280; font-size: 12px;">
+            <div>Lat: ${lat.toFixed(6)}</div>
+            <div>Lng: ${lng.toFixed(6)}</div>
+          </div>
+        </div>
+      `);
+      
+      // Pan to updated location
+      if (map) {
+        map.panTo([lat, lng]);
+      }
+    }
+
+    setEditingTitik(null);
+  };
+
   return (
     <div className="w-full h-screen flex flex-col bg-gradient-to-br from-gray-50 to-gray-100">
       {/* Header */}
@@ -389,9 +505,13 @@ const Maps = () => {
         </div>
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative">
         {/* Sidebar */}
-        <div className="w-96 bg-white shadow-xl border-r border-gray-200 flex flex-col">
+        <div 
+          className={`bg-white shadow-xl border-r border-gray-200 flex flex-col transition-all duration-300 ${
+            isSidebarOpen ? 'w-96' : 'w-0'
+          } overflow-hidden`}
+        >
           <div className="flex-1 overflow-y-auto p-6 space-y-6">
             {/* Add Titik by Coordinates */}
             <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-5 border border-blue-100">
@@ -407,7 +527,7 @@ const Maps = () => {
                   placeholder="Nama lokasi (opsional)"
                   value={inputName}
                   onChange={(e) => setInputName(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                  className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                 />
                 <div className="grid grid-cols-2 gap-3">
                   <input
@@ -416,7 +536,7 @@ const Maps = () => {
                     placeholder="Latitude"
                     value={inputLat}
                     onChange={(e) => setInputLat(e.target.value)}
-                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                   />
                   <input
                     type="number"
@@ -424,7 +544,7 @@ const Maps = () => {
                     placeholder="Longitude"
                     value={inputLng}
                     onChange={(e) => setInputLng(e.target.value)}
-                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                   />
                 </div>
                 <button
@@ -507,39 +627,101 @@ const Maps = () => {
                 {titiks.map((titik, idx) => (
                   <div
                     key={titik.id}
-                    className={`rounded-xl cursor-pointer transition-all ${
+                    className={`rounded-xl transition-all ${
                       selectedTitiks.includes(titik.id)
                         ? 'bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-400 shadow-md'
                         : 'bg-gray-50 border-2 border-transparent hover:bg-gray-100 hover:shadow-sm'
                     }`}
                   >
-                    <div className="p-4">
-                      <div className="flex items-start gap-3">
-                        <div 
-                          onClick={() => toggleSelectTitik(titik.id)}
-                          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0 ${
-                            selectedTitiks.includes(titik.id) ? 'bg-blue-500' : 'bg-red-500'
-                          }`}
-                        >
-                          {idx + 1}
+                    {editingTitik?.id === titik.id ? (
+                      // Edit Mode
+                      <div className="p-4 space-y-3">
+                        <input
+                          type="text"
+                          value={editingTitik.name}
+                          onChange={(e) => setEditingTitik({ ...editingTitik, name: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                          placeholder="Nama lokasi"
+                        />
+                        <div className="grid grid-cols-2 gap-2">
+                          <input
+                            type="number"
+                            step="any"
+                            value={editingTitik.lat}
+                            onChange={(e) => setEditingTitik({ ...editingTitik, lat: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                            placeholder="Latitude"
+                          />
+                          <input
+                            type="number"
+                            step="any"
+                            value={editingTitik.lng}
+                            onChange={(e) => setEditingTitik({ ...editingTitik, lng: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                            placeholder="Longitude"
+                          />
                         </div>
-                        <div className="flex-1 min-w-0" onClick={() => toggleSelectTitik(titik.id)}>
-                          <p className="font-semibold text-sm text-gray-800 truncate">{titik.name}</p>
-                          <p className="text-xs text-gray-500 mt-0.5">
-                            {titik.lat.toFixed(6)}, {titik.lng.toFixed(6)}
-                          </p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={saveEditTitik}
+                            className="flex-1 bg-green-500 text-white py-2 rounded-lg hover:bg-green-600 transition-all text-sm font-medium flex items-center justify-center gap-1"
+                          >
+                            <Save size={14} />
+                            Simpan
+                          </button>
+                          <button
+                            onClick={cancelEditTitik}
+                            className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-400 transition-all text-sm font-medium flex items-center justify-center gap-1"
+                          >
+                            <X size={14} />
+                            Batal
+                          </button>
                         </div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteTitik(titik.id);
-                          }}
-                          className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-all"
-                        >
-                          <Trash2 size={16} />
-                        </button>
                       </div>
-                    </div>
+                    ) : (
+                      // View Mode
+                      <div className="p-4">
+                        <div className="flex items-start gap-3">
+                          <div 
+                            onClick={() => toggleSelectTitik(titik.id)}
+                            className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0 cursor-pointer ${
+                              selectedTitiks.includes(titik.id) ? 'bg-blue-500' : 'bg-red-500'
+                            }`}
+                          >
+                            {idx + 1}
+                          </div>
+                          <div className="flex-1 min-w-0" onClick={() => toggleSelectTitik(titik.id)}>
+                            <p className="font-semibold text-sm text-gray-800 truncate cursor-pointer">{titik.name}</p>
+                            <p className="text-xs text-gray-500 mt-0.5 cursor-pointer">
+                              {titik.lat.toFixed(6)}, {titik.lng.toFixed(6)}
+                            </p>
+                            <p className="text-xs text-blue-500 mt-1">🖱️ Drag marker di peta untuk pindah</p>
+                          </div>
+                          <div className="flex gap-1">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startEditTitik(titik);
+                              }}
+                              className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 p-1.5 rounded-lg transition-all"
+                              title="Edit titik"
+                            >
+                              <Edit2 size={16} />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deleteTitik(titik.id);
+                              }}
+                              className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-all"
+                              title="Hapus titik"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -555,6 +737,15 @@ const Maps = () => {
             </div>
           </div>
         </div>
+
+        {/* Toggle Sidebar Button */}
+        <button
+          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+          className="absolute left-0 top-1/2 -translate-y-1/2 bg-white p-2 rounded-r-lg shadow-lg hover:bg-gray-50 transition-all z-[1000] border-r border-t border-b border-gray-200"
+          style={{ left: isSidebarOpen ? '384px' : '0' }}
+        >
+          {isSidebarOpen ? <ChevronLeft size={20} /> : <ChevronRight size={20} />}
+        </button>
 
         {/* Map Container */}
         <div className="flex-1 relative">
@@ -594,6 +785,25 @@ const Maps = () => {
         }
         :global(.distance-tooltip:before) {
           border-top-color: rgba(0, 0, 0, 0.85) !important;
+        }
+        :global(.marker-dot) {
+          background: #ef4444;
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          border: 3px solid white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-weight: bold;
+          font-size: 14px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          cursor: pointer;
+          transition: transform 0.2s;
+        }
+        :global(.marker-dot:hover) {
+          transform: scale(1.1);
         }
       `}</style>
     </div>
