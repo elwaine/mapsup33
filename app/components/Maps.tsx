@@ -1,0 +1,603 @@
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import { MapPin, Navigation, Trash2, Plus, Ruler, Loader2 } from 'lucide-react';
+import type L from 'leaflet';
+
+interface Titik {
+  id: number;
+  lat: number;
+  lng: number;
+  name: string;
+}
+
+interface UserLocation {
+  lat: number;
+  lng: number;
+}
+
+const Maps = () => {
+  const [map, setMap] = useState<L.Map | null>(null);
+  const [L, setL] = useState<typeof import('leaflet') | null>(null);
+  const [titiks, setTitiks] = useState<Titik[]>([]);
+  const [selectedTitiks, setSelectedTitiks] = useState<number[]>([]);
+  const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
+  const [inputLat, setInputLat] = useState('');
+  const [inputLng, setInputLng] = useState('');
+  const [inputName, setInputName] = useState('');
+  const [routeType, setRouteType] = useState<'straight' | 'route'>('straight');
+  const [distance, setDistance] = useState<string | null>(null);
+  const [isLoadingLocation, setIsLoadingLocation] = useState(true);
+  const [isLoadingRoute, setIsLoadingRoute] = useState(false);
+  const mapRef = useRef<HTMLDivElement>(null);
+  const markersRef = useRef<{ [key: number]: L.Marker }>({});
+  const linesRef = useRef<L.Polyline[]>([]);
+  const userMarkerRef = useRef<L.Marker | null>(null);
+
+  // Load Leaflet
+  useEffect(() => {
+    const loadLeaflet = async () => {
+      if (typeof window !== 'undefined') {
+        const leaflet = await import('leaflet');
+        setL(leaflet);
+        
+        // Load CSS
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+        document.head.appendChild(link);
+      }
+    };
+    loadLeaflet();
+  }, []);
+
+  // Get user location with high accuracy
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const loc = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          };
+          setUserLocation(loc);
+          setIsLoadingLocation(false);
+        },
+        (error) => {
+          console.error('Error getting location:', error);
+          // Default to Palu, Central Sulawesi if location access denied
+          setUserLocation({ lat: -0.8999, lng: 119.8707 });
+          setIsLoadingLocation(false);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        }
+      );
+    } else {
+      setUserLocation({ lat: -0.8999, lng: 119.8707 });
+      setIsLoadingLocation(false);
+    }
+  }, []);
+
+  // Initialize map
+  useEffect(() => {
+    if (L && userLocation && !map && mapRef.current) {
+      const mapInstance = L.map(mapRef.current, {
+        zoomControl: false
+      }).setView([userLocation.lat, userLocation.lng], 16);
+
+      // Add zoom control to top left
+      L.control.zoom({ position: 'topleft' }).addTo(mapInstance);
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 19
+      }).addTo(mapInstance);
+
+      // Add user location marker with pulse effect
+      const userMarker = L.marker([userLocation.lat, userLocation.lng], {
+        icon: L.divIcon({
+          className: 'user-location-marker',
+          html: `
+            <div style="position: relative;">
+              <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(59, 130, 246, 0.2); width: 40px; height: 40px; border-radius: 50%; animation: pulse 2s infinite;"></div>
+              <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #3b82f6; width: 16px; height: 16px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 10px rgba(0,0,0,0.3);"></div>
+            </div>
+            <style>
+              @keyframes pulse {
+                0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+                100% { transform: translate(-50%, -50%) scale(2); opacity: 0; }
+              }
+            </style>
+          `,
+          iconSize: [40, 40]
+        })
+      }).addTo(mapInstance);
+      
+      userMarker.bindPopup('<b>Lokasi Anda</b>');
+      userMarkerRef.current = userMarker;
+
+      // Click to add titik
+      mapInstance.on('click', (e: L.LeafletMouseEvent) => {
+        const newTitik: Titik = {
+          id: Date.now(),
+          lat: e.latlng.lat,
+          lng: e.latlng.lng,
+          name: `Titik ${titiks.length + 1}`
+        };
+        addTitikToMap(newTitik, mapInstance);
+      });
+
+      setMap(mapInstance);
+    }
+  }, [L, userLocation, map, titiks.length]);
+
+  const addTitikToMap = (titik: Titik, mapInstance?: L.Map) => {
+    const m = mapInstance || map;
+    if (!m || !L) return;
+
+    const markerNumber = titiks.length + 1;
+    const marker = L.marker([titik.lat, titik.lng], {
+      icon: L.divIcon({
+        className: 'custom-marker',
+        html: `<div style="background: #ef4444; width: 36px; height: 36px; border-radius: 50%; border: 3px solid white; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform='scale(1)'">${markerNumber}</div>`,
+        iconSize: [36, 36]
+      })
+    }).addTo(m);
+
+    marker.bindPopup(`
+      <div style="font-family: system-ui; padding: 4px;">
+        <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">${titik.name}</div>
+        <div style="color: #6b7280; font-size: 12px;">
+          <div>Lat: ${titik.lat.toFixed(6)}</div>
+          <div>Lng: ${titik.lng.toFixed(6)}</div>
+        </div>
+      </div>
+    `);
+    
+    marker.on('click', () => {
+      toggleSelectTitik(titik.id);
+    });
+
+    markersRef.current[titik.id] = marker;
+    setTitiks(prev => [...prev, titik]);
+  };
+
+  const toggleSelectTitik = (id: number) => {
+    setSelectedTitiks(prev => {
+      if (prev.includes(id)) {
+        return prev.filter(tid => tid !== id);
+      } else {
+        return [...prev, id];
+      }
+    });
+  };
+
+  const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+    const R = 6371; // Radius bumi dalam km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  };
+
+  // Fetch route from OSRM (OpenStreetMap routing)
+  const fetchRoute = async (points: Titik[]) => {
+    if (points.length < 2) return null;
+    
+    const coordinates = points.map(p => `${p.lng},${p.lat}`).join(';');
+    const url = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
+    
+    try {
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (data.code === 'Ok' && data.routes && data.routes[0]) {
+        return {
+          coordinates: data.routes[0].geometry.coordinates.map((coord: number[]) => [coord[1], coord[0]] as [number, number]),
+          distance: data.routes[0].distance / 1000 // Convert to km
+        };
+      }
+    } catch (error) {
+      console.error('Error fetching route:', error);
+    }
+    return null;
+  };
+
+  useEffect(() => {
+    const updateRoutes = async () => {
+      if (!map || !L || selectedTitiks.length < 2) {
+        linesRef.current.forEach(line => {
+          if (map) {
+            map.removeLayer(line);
+          }
+        });
+        linesRef.current = [];
+        setDistance(null);
+        return;
+      }
+
+      // Clear previous lines
+      linesRef.current.forEach(line => map.removeLayer(line));
+      linesRef.current = [];
+
+      const selectedPoints = titiks.filter(t => selectedTitiks.includes(t.id));
+      
+      if (routeType === 'straight') {
+        // Draw straight lines between consecutive points
+        let totalDist = 0;
+        for (let i = 0; i < selectedPoints.length - 1; i++) {
+          const p1 = selectedPoints[i];
+          const p2 = selectedPoints[i + 1];
+          
+          const segmentDist = calculateDistance(p1.lat, p1.lng, p2.lat, p2.lng);
+          
+          const line = L.polyline(
+            [[p1.lat, p1.lng], [p2.lat, p2.lng]],
+            { 
+              color: '#3b82f6', 
+              weight: 4, 
+              opacity: 0.8,
+              lineJoin: 'round',
+              lineCap: 'round'
+            }
+          ).addTo(map);
+          
+          line.bindTooltip(`${segmentDist.toFixed(2)} km`, {
+            permanent: false,
+            direction: 'center',
+            className: 'distance-tooltip'
+          });
+          
+          linesRef.current.push(line);
+          totalDist += segmentDist;
+        }
+        setDistance(totalDist.toFixed(2));
+      } else {
+        // Route type - fetch real routing data
+        setIsLoadingRoute(true);
+        const routeData = await fetchRoute(selectedPoints);
+        setIsLoadingRoute(false);
+        
+        if (routeData) {
+          const line = L.polyline(routeData.coordinates, {
+            color: '#10b981',
+            weight: 5,
+            opacity: 0.8,
+            lineJoin: 'round',
+            lineCap: 'round'
+          }).addTo(map);
+          
+          // Add distance tooltips for each segment
+          for (let i = 0; i < selectedPoints.length - 1; i++) {
+            const p1 = selectedPoints[i];
+            const p2 = selectedPoints[i + 1];
+            const segmentDist = calculateDistance(p1.lat, p1.lng, p2.lat, p2.lng);
+            
+            const midLat = (p1.lat + p2.lat) / 2;
+            const midLng = (p1.lng + p2.lng) / 2;
+            
+            const tooltipMarker = L.circleMarker([midLat, midLng], {
+              radius: 0,
+              opacity: 0
+            }).addTo(map);
+            
+            tooltipMarker.bindTooltip(`${segmentDist.toFixed(2)} km`, {
+              permanent: false,
+              direction: 'center',
+              className: 'distance-tooltip'
+            });
+            
+            linesRef.current.push(tooltipMarker as unknown as L.Polyline);
+          }
+          
+          linesRef.current.push(line);
+          setDistance(routeData.distance.toFixed(2));
+        } else {
+          // Fallback to straight line if routing fails
+          const coords: [number, number][] = selectedPoints.map(p => [p.lat, p.lng]);
+          const line = L.polyline(coords, {
+            color: '#10b981',
+            weight: 5,
+            opacity: 0.8,
+            lineJoin: 'round',
+            lineCap: 'round'
+          }).addTo(map);
+          
+          linesRef.current.push(line);
+          
+          let totalDist = 0;
+          for (let i = 0; i < selectedPoints.length - 1; i++) {
+            const p1 = selectedPoints[i];
+            const p2 = selectedPoints[i + 1];
+            totalDist += calculateDistance(p1.lat, p1.lng, p2.lat, p2.lng);
+          }
+          setDistance(totalDist.toFixed(2));
+        }
+      }
+    };
+
+    updateRoutes();
+  }, [selectedTitiks, routeType, titiks, map, L]);
+
+  const handleAddTitikByInput = () => {
+    if (!inputLat || !inputLng) return;
+    
+    const newTitik: Titik = {
+      id: Date.now(),
+      lat: parseFloat(inputLat),
+      lng: parseFloat(inputLng),
+      name: inputName || `Titik ${titiks.length + 1}`
+    };
+    
+    addTitikToMap(newTitik, map || undefined);
+    setInputLat('');
+    setInputLng('');
+    setInputName('');
+  };
+
+  const returnToUserLocation = () => {
+    if (map && userLocation) {
+      map.flyTo([userLocation.lat, userLocation.lng], 16, {
+        duration: 1.5
+      });
+      userMarkerRef.current?.openPopup();
+    }
+  };
+
+  const clearAllTitiks = () => {
+    Object.values(markersRef.current).forEach(marker => {
+      if (map) map.removeLayer(marker);
+    });
+    linesRef.current.forEach(line => {
+      if (map) map.removeLayer(line);
+    });
+    markersRef.current = {};
+    linesRef.current = [];
+    setTitiks([]);
+    setSelectedTitiks([]);
+    setDistance(null);
+  };
+
+  const deleteTitik = (id: number) => {
+    const marker = markersRef.current[id];
+    if (marker && map) {
+      map.removeLayer(marker);
+    }
+    delete markersRef.current[id];
+    setTitiks(prev => prev.filter(t => t.id !== id));
+    setSelectedTitiks(prev => prev.filter(tid => tid !== id));
+  };
+
+  return (
+    <div className="w-full h-screen flex flex-col bg-gradient-to-br from-gray-50 to-gray-100">
+      {/* Header */}
+      <div className="bg-white shadow-lg border-b border-gray-200">
+        <div className="px-6 py-4">
+          <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-3">
+            <div className="p-2 bg-red-50 rounded-lg">
+              <MapPin className="text-red-500" size={24} />
+            </div>
+            <span>Interactive Maps</span>
+          </h1>
+          <p className="text-sm text-gray-500 mt-1">Tandai lokasi dan ukur jarak dengan mudah</p>
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar */}
+        <div className="w-96 bg-white shadow-xl border-r border-gray-200 flex flex-col">
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            {/* Add Titik by Coordinates */}
+            <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-5 border border-blue-100">
+              <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2 text-base">
+                <div className="p-1.5 bg-blue-500 rounded-lg">
+                  <Plus size={16} className="text-white" />
+                </div>
+                Tambah Titik Baru
+              </h3>
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  placeholder="Nama lokasi (opsional)"
+                  value={inputName}
+                  onChange={(e) => setInputName(e.target.value)}
+                  className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Latitude"
+                    value={inputLat}
+                    onChange={(e) => setInputLat(e.target.value)}
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                  />
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Longitude"
+                    value={inputLng}
+                    onChange={(e) => setInputLng(e.target.value)}
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                  />
+                </div>
+                <button
+                  onClick={handleAddTitikByInput}
+                  disabled={!inputLat || !inputLng}
+                  className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white py-3 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all text-sm font-semibold shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Tambah Titik
+                </button>
+                <p className="text-xs text-gray-600 text-center">
+                  💡 Atau klik langsung di peta untuk menambah titik
+                </p>
+              </div>
+            </div>
+
+            {/* Route Type */}
+            {selectedTitiks.length >= 2 && (
+              <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
+                <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2 text-base">
+                  <div className="p-1.5 bg-purple-500 rounded-lg">
+                    <Ruler size={16} className="text-white" />
+                  </div>
+                  Tipe Garis
+                </h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => setRouteType('straight')}
+                    className={`py-3 px-4 rounded-lg text-sm font-semibold transition-all ${
+                      routeType === 'straight'
+                        ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    Garis Lurus
+                  </button>
+                  <button
+                    onClick={() => setRouteType('route')}
+                    disabled={isLoadingRoute}
+                    className={`py-3 px-4 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                      routeType === 'route'
+                        ? 'bg-gradient-to-r from-green-500 to-green-600 text-white shadow-md'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    } disabled:opacity-50`}
+                  >
+                    {isLoadingRoute && <Loader2 size={14} className="animate-spin" />}
+                    Rute Jalan
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Distance */}
+            {distance && (
+              <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl p-6 border border-green-200 shadow-sm">
+                <h3 className="font-semibold text-green-800 mb-2 text-sm">Total Jarak</h3>
+                <p className="text-4xl font-bold text-green-600">{distance} <span className="text-xl">km</span></p>
+                <p className="text-xs text-green-700 mt-2">
+                  {routeType === 'route' ? '🚗 Jarak via jalan' : '📏 Jarak lurus'}
+                </p>
+              </div>
+            )}
+
+            {/* Titik List */}
+            <div>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="font-semibold text-gray-800 text-base">
+                  Daftar Titik <span className="text-blue-500">({titiks.length})</span>
+                </h3>
+                {titiks.length > 0 && (
+                  <button
+                    onClick={clearAllTitiks}
+                    className="text-red-500 hover:text-red-700 text-sm flex items-center gap-1.5 font-medium hover:bg-red-50 px-3 py-1.5 rounded-lg transition-all"
+                  >
+                    <Trash2 size={14} />
+                    Hapus Semua
+                  </button>
+                )}
+              </div>
+              <div className="space-y-2">
+                {titiks.map((titik, idx) => (
+                  <div
+                    key={titik.id}
+                    className={`rounded-xl cursor-pointer transition-all ${
+                      selectedTitiks.includes(titik.id)
+                        ? 'bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-400 shadow-md'
+                        : 'bg-gray-50 border-2 border-transparent hover:bg-gray-100 hover:shadow-sm'
+                    }`}
+                  >
+                    <div className="p-4">
+                      <div className="flex items-start gap-3">
+                        <div 
+                          onClick={() => toggleSelectTitik(titik.id)}
+                          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0 ${
+                            selectedTitiks.includes(titik.id) ? 'bg-blue-500' : 'bg-red-500'
+                          }`}
+                        >
+                          {idx + 1}
+                        </div>
+                        <div className="flex-1 min-w-0" onClick={() => toggleSelectTitik(titik.id)}>
+                          <p className="font-semibold text-sm text-gray-800 truncate">{titik.name}</p>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {titik.lat.toFixed(6)}, {titik.lng.toFixed(6)}
+                          </p>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteTitik(titik.id);
+                          }}
+                          className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-all"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {titiks.length === 0 && (
+                <div className="text-center py-12">
+                  <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <MapPin className="text-gray-400" size={32} />
+                  </div>
+                  <p className="text-sm text-gray-500">Belum ada titik</p>
+                  <p className="text-xs text-gray-400 mt-1">Klik peta atau input koordinat untuk mulai</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Map Container */}
+        <div className="flex-1 relative">
+          {isLoadingLocation && (
+            <div className="absolute inset-0 bg-white bg-opacity-90 flex items-center justify-center z-[1001]">
+              <div className="text-center">
+                <Loader2 className="w-12 h-12 text-blue-500 animate-spin mx-auto mb-3" />
+                <p className="text-gray-700 font-medium">Mencari lokasi Anda...</p>
+                <p className="text-sm text-gray-500 mt-1">Mohon izinkan akses lokasi</p>
+              </div>
+            </div>
+          )}
+          
+          <div ref={mapRef} className="w-full h-full" />
+          
+          {/* Return to Location Button */}
+          <button
+            onClick={returnToUserLocation}
+            className="absolute top-6 right-6 bg-white p-4 rounded-xl shadow-lg hover:shadow-xl transition-all z-[1000] group hover:bg-blue-50 border border-gray-200"
+            title="Kembali ke lokasi saya"
+          >
+            <Navigation size={24} className="text-blue-500 group-hover:scale-110 transition-transform" />
+          </button>
+        </div>
+      </div>
+
+      <style jsx>{`
+        :global(.distance-tooltip) {
+          background: rgba(0, 0, 0, 0.85) !important;
+          border: none !important;
+          border-radius: 8px !important;
+          color: white !important;
+          font-weight: 600 !important;
+          font-size: 13px !important;
+          padding: 6px 12px !important;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+        }
+        :global(.distance-tooltip:before) {
+          border-top-color: rgba(0, 0, 0, 0.85) !important;
+        }
+      `}</style>
+    </div>
+  );
+};
+
+export default Maps;
