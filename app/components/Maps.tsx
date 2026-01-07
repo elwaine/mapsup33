@@ -9,6 +9,8 @@ interface Titik {
   lat: number;
   lng: number;
   name: string;
+  kapasitas: string;
+  iconType: 'trafo' | 'dot';
 }
 
 interface UserLocation {
@@ -21,6 +23,8 @@ interface EditingTitik {
   name: string;
   lat: string;
   lng: string;
+  kapasitas: string;
+  iconType: 'trafo' | 'dot';
 }
 
 const Maps = () => {
@@ -32,12 +36,15 @@ const Maps = () => {
   const [inputLat, setInputLat] = useState('');
   const [inputLng, setInputLng] = useState('');
   const [inputName, setInputName] = useState('');
+  const [inputKapasitas, setInputKapasitas] = useState('');
+  const [inputIconType, setInputIconType] = useState<'trafo' | 'dot'>('dot');
   const [routeType, setRouteType] = useState<'straight' | 'route'>('straight');
   const [distance, setDistance] = useState<string | null>(null);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [editingTitik, setEditingTitik] = useState<EditingTitik | null>(null);
+  const [locationWatchId, setLocationWatchId] = useState<number | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<{ [key: number]: L.Marker }>({});
   const linesRef = useRef<L.Polyline[]>([]);
@@ -60,56 +67,70 @@ const Maps = () => {
     loadLeaflet();
   }, []);
 
-  // Get user location with high accuracy
+  // Get user location with high accuracy and continuous tracking
   useEffect(() => {
-    if (navigator.geolocation) {
-      // Try high accuracy first
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const loc = {
-            lat: position.coords.latitude,
-            lng: position.coords.longitude
-          };
-          setUserLocation(loc);
-          setIsLoadingLocation(false);
-        },
-        (error: GeolocationPositionError) => {
-          console.warn('High accuracy failed, trying standard accuracy:', error.message);
-          // Fallback to standard accuracy if high accuracy fails
-          navigator.geolocation.getCurrentPosition(
-            (position) => {
-              const loc = {
-                lat: position.coords.latitude,
-                lng: position.coords.longitude
-              };
-              setUserLocation(loc);
-              setIsLoadingLocation(false);
-            },
-            (fallbackError: GeolocationPositionError) => {
-              console.error('Location access denied or unavailable:', fallbackError.message);
-              // Default to Manado, North Sulawesi
-              setUserLocation({ lat: 1.4748, lng: 124.8421 });
-              setIsLoadingLocation(false);
-            },
-            {
-              enableHighAccuracy: false,
-              timeout: 10000,
-              maximumAge: 60000
-            }
-          );
-        },
-        {
-          enableHighAccuracy: true,
-          timeout: 5000,
-          maximumAge: 0
-        }
-      );
-    } else {
+    if (!navigator.geolocation) {
       console.warn('Geolocation is not supported by this browser');
       setUserLocation({ lat: 1.4748, lng: 124.8421 });
       setIsLoadingLocation(false);
+      return;
     }
-  }, []);
+
+    // First, get initial position quickly
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const loc = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+        setUserLocation(loc);
+        setIsLoadingLocation(false);
+      },
+      (error: GeolocationPositionError) => {
+        console.error('Initial location error:', error.message);
+        setUserLocation({ lat: 1.4748, lng: 124.8421 });
+        setIsLoadingLocation(false);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+      }
+    );
+
+    // Then setup continuous tracking with watchPosition
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const newLoc = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+        setUserLocation(newLoc);
+        
+        // Update user marker position if it exists
+        if (userMarkerRef.current && L) {
+          userMarkerRef.current.setLatLng([newLoc.lat, newLoc.lng]);
+        }
+      },
+      (error: GeolocationPositionError) => {
+        console.error('Watch position error:', error.message);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 5000, // Accept cached positions up to 5 seconds old
+        timeout: 10000
+      }
+    );
+
+    setLocationWatchId(watchId);
+
+    // Cleanup: stop watching when component unmounts
+    return () => {
+      if (watchId) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [L]);
 
   // Initialize map
   useEffect(() => {
@@ -155,7 +176,9 @@ const Maps = () => {
           id: Date.now(),
           lat: e.latlng.lat,
           lng: e.latlng.lng,
-          name: `Titik ${titiks.length + 1}`
+          name: `Titik ${titiks.length + 1}`,
+          kapasitas: '',
+          iconType: 'dot'
         };
         addTitikToMap(newTitik, mapInstance);
       });
@@ -167,20 +190,52 @@ const Maps = () => {
   const addTitikToMap = (titik: Titik, mapInstance?: L.Map) => {
     const m = mapInstance || map;
     if (!m || !L) return;
-
-    const markerNumber = titiks.length + 1;
+    
+    // Choose icon HTML based on iconType
+    let iconHTML = '';
+    if (titik.iconType === 'trafo') {
+      iconHTML = `
+        <div class="marker-trafo-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+          </svg>
+        </div>
+      `;
+    } else {
+      iconHTML = `<div class="marker-dot-simple"></div>`;
+    }
+    
     const marker = L.marker([titik.lat, titik.lng], {
       icon: L.divIcon({
         className: 'custom-marker',
-        html: `<div class="marker-dot">${markerNumber}</div>`,
-        iconSize: [36, 36]
+        html: iconHTML,
+        iconSize: [24, 24]
       }),
       draggable: true
     }).addTo(m);
 
+    // Tooltip on hover
+    const tooltipContent = `
+      <div style="font-family: system-ui; padding: 8px;">
+        <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px; color: #1f2937;">${titik.name}</div>
+        ${titik.kapasitas ? `<div style="color: #059669; font-size: 13px; font-weight: 500; margin-bottom: 4px;">⚡ ${titik.kapasitas}</div>` : ''}
+        <div style="color: #6b7280; font-size: 11px; border-top: 1px solid #e5e7eb; padding-top: 4px; margin-top: 4px;">
+          <div>Lat: ${titik.lat.toFixed(6)}</div>
+          <div>Lng: ${titik.lng.toFixed(6)}</div>
+        </div>
+      </div>
+    `;
+    
+    marker.bindTooltip(tooltipContent, {
+      direction: 'top',
+      offset: [0, -10],
+      opacity: 0.95
+    });
+
     marker.bindPopup(`
       <div style="font-family: system-ui; padding: 4px;">
         <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">${titik.name}</div>
+        ${titik.kapasitas ? `<div style="color: #059669; font-size: 13px; font-weight: 500; margin-bottom: 4px;">⚡ Kapasitas: ${titik.kapasitas}</div>` : ''}
         <div style="color: #6b7280; font-size: 12px;">
           <div>Lat: ${titik.lat.toFixed(6)}</div>
           <div>Lng: ${titik.lng.toFixed(6)}</div>
@@ -207,14 +262,28 @@ const Maps = () => {
       t.id === id ? { ...t, lat, lng } : t
     ));
     
-    // Update marker popup
+    // Update marker popup and tooltip
     const marker = markersRef.current[id];
     if (marker) {
       const titik = titiks.find(t => t.id === id);
       if (titik) {
+        const tooltipContent = `
+          <div style="font-family: system-ui; padding: 8px;">
+            <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px; color: #1f2937;">${titik.name}</div>
+            ${titik.kapasitas ? `<div style="color: #059669; font-size: 13px; font-weight: 500; margin-bottom: 4px;">⚡ ${titik.kapasitas}</div>` : ''}
+            <div style="color: #6b7280; font-size: 11px; border-top: 1px solid #e5e7eb; padding-top: 4px; margin-top: 4px;">
+              <div>Lat: ${lat.toFixed(6)}</div>
+              <div>Lng: ${lng.toFixed(6)}</div>
+            </div>
+          </div>
+        `;
+        
+        marker.setTooltipContent(tooltipContent);
+        
         marker.setPopupContent(`
           <div style="font-family: system-ui; padding: 4px;">
             <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">${titik.name}</div>
+            ${titik.kapasitas ? `<div style="color: #059669; font-size: 13px; font-weight: 500; margin-bottom: 4px;">⚡ Kapasitas: ${titik.kapasitas}</div>` : ''}
             <div style="color: #6b7280; font-size: 12px;">
               <div>Lat: ${lat.toFixed(6)}</div>
               <div>Lng: ${lng.toFixed(6)}</div>
@@ -394,13 +463,17 @@ const Maps = () => {
       id: Date.now(),
       lat: parseFloat(inputLat),
       lng: parseFloat(inputLng),
-      name: inputName || `Titik ${titiks.length + 1}`
+      name: inputName || `Titik ${titiks.length + 1}`,
+      kapasitas: inputKapasitas,
+      iconType: inputIconType
     };
     
     addTitikToMap(newTitik, map || undefined);
     setInputLat('');
     setInputLng('');
     setInputName('');
+    setInputKapasitas('');
+    setInputIconType('dot');
   };
 
   const returnToUserLocation = () => {
@@ -441,7 +514,9 @@ const Maps = () => {
       id: titik.id,
       name: titik.name,
       lat: titik.lat.toString(),
-      lng: titik.lng.toString()
+      lng: titik.lng.toString(),
+      kapasitas: titik.kapasitas,
+      iconType: titik.iconType
     });
   };
 
@@ -463,17 +538,52 @@ const Maps = () => {
     // Update titik data
     setTitiks(prev => prev.map(t => 
       t.id === editingTitik.id 
-        ? { ...t, name: editingTitik.name, lat, lng } 
+        ? { ...t, name: editingTitik.name, lat, lng, kapasitas: editingTitik.kapasitas, iconType: editingTitik.iconType } 
         : t
     ));
 
-    // Update marker position and popup
+    // Update marker position, icon, popup and tooltip
     const marker = markersRef.current[editingTitik.id];
-    if (marker && L) {
+    if (marker && L && map) {
       marker.setLatLng([lat, lng]);
+      
+      // Update icon based on iconType
+      let iconHTML = '';
+      if (editingTitik.iconType === 'trafo') {
+        iconHTML = `
+          <div class="marker-trafo-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+            </svg>
+          </div>
+        `;
+      } else {
+        iconHTML = `<div class="marker-dot-simple"></div>`;
+      }
+      
+      marker.setIcon(L.divIcon({
+        className: 'custom-marker',
+        html: iconHTML,
+        iconSize: [24, 24]
+      }));
+      
+      const tooltipContent = `
+        <div style="font-family: system-ui; padding: 8px;">
+          <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px; color: #1f2937;">${editingTitik.name}</div>
+          ${editingTitik.kapasitas ? `<div style="color: #059669; font-size: 13px; font-weight: 500; margin-bottom: 4px;">⚡ ${editingTitik.kapasitas}</div>` : ''}
+          <div style="color: #6b7280; font-size: 11px; border-top: 1px solid #e5e7eb; padding-top: 4px; margin-top: 4px;">
+            <div>Lat: ${lat.toFixed(6)}</div>
+            <div>Lng: ${lng.toFixed(6)}</div>
+          </div>
+        </div>
+      `;
+      
+      marker.setTooltipContent(tooltipContent);
+      
       marker.setPopupContent(`
         <div style="font-family: system-ui; padding: 4px;">
           <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">${editingTitik.name}</div>
+          ${editingTitik.kapasitas ? `<div style="color: #059669; font-size: 13px; font-weight: 500; margin-bottom: 4px;">⚡ Kapasitas: ${editingTitik.kapasitas}</div>` : ''}
           <div style="color: #6b7280; font-size: 12px;">
             <div>Lat: ${lat.toFixed(6)}</div>
             <div>Lng: ${lng.toFixed(6)}</div>
@@ -482,9 +592,7 @@ const Maps = () => {
       `);
       
       // Pan to updated location
-      if (map) {
-        map.panTo([lat, lng]);
-      }
+      map.panTo([lat, lng]);
     }
 
     setEditingTitik(null);
@@ -529,6 +637,13 @@ const Maps = () => {
                   onChange={(e) => setInputName(e.target.value)}
                   className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                 />
+                <input
+                  type="text"
+                  placeholder="Kapasitas gardu (e.g., 50 kVA)"
+                  value={inputKapasitas}
+                  onChange={(e) => setInputKapasitas(e.target.value)}
+                  className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                />
                 <div className="grid grid-cols-2 gap-3">
                   <input
                     type="number"
@@ -546,6 +661,37 @@ const Maps = () => {
                     onChange={(e) => setInputLng(e.target.value)}
                     className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-2">Pilih Ikon:</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setInputIconType('dot')}
+                      className={`py-3 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                        inputIconType === 'dot'
+                          ? 'bg-red-500 text-white shadow-md'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      <div className="w-3 h-3 rounded-full bg-current"></div>
+                      Titik Bulat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInputIconType('trafo')}
+                      className={`py-3 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                        inputIconType === 'trafo'
+                          ? 'bg-yellow-500 text-white shadow-md'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                      </svg>
+                      Trafo
+                    </button>
+                  </div>
                 </div>
                 <button
                   onClick={handleAddTitikByInput}
@@ -643,6 +789,13 @@ const Maps = () => {
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
                           placeholder="Nama lokasi"
                         />
+                        <input
+                          type="text"
+                          value={editingTitik.kapasitas}
+                          onChange={(e) => setEditingTitik({ ...editingTitik, kapasitas: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                          placeholder="Kapasitas gardu"
+                        />
                         <div className="grid grid-cols-2 gap-2">
                           <input
                             type="number"
@@ -660,6 +813,37 @@ const Maps = () => {
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
                             placeholder="Longitude"
                           />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-2">Ikon:</label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setEditingTitik({ ...editingTitik, iconType: 'dot' })}
+                              className={`py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+                                editingTitik.iconType === 'dot'
+                                  ? 'bg-red-500 text-white'
+                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                              }`}
+                            >
+                              <div className="w-2 h-2 rounded-full bg-current"></div>
+                              Titik
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingTitik({ ...editingTitik, iconType: 'trafo' })}
+                              className={`py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+                                editingTitik.iconType === 'trafo'
+                                  ? 'bg-yellow-500 text-white'
+                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                              }`}
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                              </svg>
+                              Trafo
+                            </button>
+                          </div>
                         </div>
                         <div className="flex gap-2">
                           <button
@@ -692,9 +876,27 @@ const Maps = () => {
                           </div>
                           <div className="flex-1 min-w-0" onClick={() => toggleSelectTitik(titik.id)}>
                             <p className="font-semibold text-sm text-gray-800 truncate cursor-pointer">{titik.name}</p>
+                            {titik.kapasitas && (
+                              <p className="text-xs text-green-600 font-medium mt-0.5">⚡ {titik.kapasitas}</p>
+                            )}
                             <p className="text-xs text-gray-500 mt-0.5 cursor-pointer">
                               {titik.lat.toFixed(6)}, {titik.lng.toFixed(6)}
                             </p>
+                            <div className="flex items-center gap-2 mt-1">
+                              {titik.iconType === 'trafo' ? (
+                                <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                                  </svg>
+                                  Trafo
+                                </span>
+                              ) : (
+                                <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                  <div className="w-1.5 h-1.5 rounded-full bg-current"></div>
+                                  Titik
+                                </span>
+                              )}
+                            </div>
                             <p className="text-xs text-blue-500 mt-1">🖱️ Drag marker di peta untuk pindah</p>
                           </div>
                           <div className="flex gap-1">
@@ -786,24 +988,34 @@ const Maps = () => {
         :global(.distance-tooltip:before) {
           border-top-color: rgba(0, 0, 0, 0.85) !important;
         }
-        :global(.marker-dot) {
-          background: #ef4444;
-          width: 36px;
-          height: 36px;
+        :global(.marker-dot-simple) {
+          background: #14b8a6;
+          width: 16px;
+          height: 16px;
           border-radius: 50%;
-          border: 3px solid white;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: white;
-          font-weight: bold;
-          font-size: 14px;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          border: 2px solid white;
+          box-shadow: 0 2px 8px rgba(20, 184, 166, 0.4);
           cursor: pointer;
           transition: transform 0.2s;
         }
-        :global(.marker-dot:hover) {
-          transform: scale(1.1);
+        :global(.marker-dot-simple:hover) {
+          transform: scale(1.2);
+        }
+        :global(.marker-trafo-icon) {
+          background: #14b8a6;
+          width: 24px;
+          height: 24px;
+          border-radius: 50%;
+          border: 2px solid white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 2px 8px rgba(20, 184, 166, 0.4);
+          cursor: pointer;
+          transition: transform 0.2s;
+        }
+        :global(.marker-trafo-icon:hover) {
+          transform: scale(1.2);
         }
       `}</style>
     </div>
